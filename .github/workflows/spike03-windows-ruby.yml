@@ -98,7 +98,14 @@ jobs:
           & "$ruby\bin\gem.cmd" install railties --no-document
           if ($LASTEXITCODE -ne 0) { throw "railties failed to install" }
 
-          & "C:\relocated\gems\bin\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
+          # RubyGems writes .bat binstubs on Windows, while RubyInstaller's own
+          # wrappers in ruby\bin are .cmd. Resolve rather than assume.
+          Write-Host "binstubs in GEM_HOME\bin:"; Get-ChildItem "C:\relocated\gems\bin" | ForEach-Object { Write-Host "    $($_.Name)" }
+          $railsCmd = @("C:\relocated\gems\bin\rails.bat","C:\relocated\gems\bin\rails.cmd","C:\relocated\gems\bin\rails") |
+                      Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $railsCmd) { throw "no rails binstub was generated in GEM_HOME\bin" }
+          Write-Host "using $railsCmd"
+          & $railsCmd new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
           if (-not (Test-Path C:\relocated\app\Gemfile)) { throw "rails new produced no app" }
 
           Write-Host "--- pinning the Gemfile to the lean set ---"

@@ -177,7 +177,11 @@ jobs:
           # while the *shipping* test below still uses the portable archive.
           ruby -v
           ridk version
+          # Reuse the app 3b generated rather than bundling against a bare
+          # Gemfile — the shipping test has to boot a real Rails app.
           New-Item -ItemType Directory -Force -Path C:\build-app | Out-Null
+          Copy-Item -Recurse -Force C:\relocated\app\* C:\build-app
+          if (-not (Test-Path C:\build-app\config\environment.rb)) { throw "3b left no Rails app to build against" }
           @(
             'source "https://rubygems.org"'
             'gem "railties", "~> 8.1"'

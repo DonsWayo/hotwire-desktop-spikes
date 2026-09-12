@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Fetch the portable archive (no installer, no devkit)
         shell: pwsh
         run: |
@@ -107,16 +109,10 @@ jobs:
           $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
           $env:RAILS_ENV = "production"
           $env:SECRET_KEY_BASE_DUMMY = "1"
+          Copy-Item "$env:GITHUB_WORKSPACE\spike03-windows-ruby\boot_check.rb" C:\relocated\app\boot_check.rb
           Push-Location C:\relocated\app
-          & "$ruby\bin\ruby.exe" -e @'
-            require "./config/environment"
-            require "rack/mock"
-            Rails.application.routes.draw { get "/up", to: proc { [200, {"content-type"=>"text/plain"}, ["ok"]] } }
-            status, = Rails.application.call(Rack::MockRequest.env_for("http://127.0.0.1/up"))
-            abort "GET /up returned #{status}" unless status == 200
-            puts "OK  Rails #{Rails::VERSION::STRING} booted and served a request"
-            puts "    from #{RbConfig::CONFIG["prefix"]}"
-'@
+          & "$ruby\bin\ruby.exe" boot_check.rb
+          if ($LASTEXITCODE -ne 0) { throw "Rails did not boot from the relocated ruby" }
           Pop-Location
 
       - name: Payload size
@@ -134,4 +130,6 @@ jobs:
         run: |
           $spaces = if ("${{ steps.spaces.outcome }}" -eq "success") { "survives spaces in the path" } else { "FAILS in a path with spaces" }
           Write-Host "Windows gate: $spaces"
-          "## Spike 3 — Windows`n`n- Spaced path: $spaces`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "## Spike 3 - Windows gate" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "- Spaced path: $spaces" | Out-File -Append $env:GITHUB_STEP_SUMMARY

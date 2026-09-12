@@ -74,10 +74,10 @@ jobs:
         continue-on-error: true
         id: fullrails
         run: |
-          $ruby = "C:\\relocated\\ruby"
-          $env:GEM_HOME = "C:\\probe-gems"
+          $ruby = "C:\relocated\ruby"
+          $env:GEM_HOME = "C:\probe-gems"
           Write-Host "--- installing the full rails meta-gem, purely to see what breaks ---"
-          & "$ruby\\bin\\gem.cmd" install rails --no-document 2>&1 | Tee-Object -Variable out
+          & "$ruby\bin\gem.cmd" install rails --no-document 2>&1 | Tee-Object -Variable out
           $out | Select-String "Building native extensions|ERROR|Gem files will remain" | ForEach-Object { Write-Host "  $_" }
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::warning::the full rails meta-gem needs a compiler on Windows"
@@ -89,16 +89,16 @@ jobs:
           # A desktop app has one user and no cable server, so ActionCable — and
           # its websocket-driver dependency, which ships no x64-mingw-ucrt binary
           # — is not part of the payload. Turbo Streams ride SSE instead.
-          $ruby = "C:\\relocated\\ruby"
-          $env:GEM_HOME = "C:\\relocated\\gems"
-          $env:GEM_PATH = "C:\\relocated\\gems;$ruby\\lib\\ruby\\gems\\3.4.0"
-          $env:PATH     = "$ruby\\bin;C:\\relocated\\gems\\bin;$env:PATH"
+          $ruby = "C:\relocated\ruby"
+          $env:GEM_HOME = "C:\relocated\gems"
+          $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
+          $env:PATH     = "$ruby\bin;C:\relocated\gems\bin;$env:PATH"
 
           Write-Host "--- railties provides the rails command without actioncable ---"
-          & "$ruby\\bin\\gem.cmd" install railties --no-document
+          & "$ruby\bin\gem.cmd" install railties --no-document
           if ($LASTEXITCODE -ne 0) { throw "railties failed to install" }
 
-          & "C:\\relocated\\gems\\bin\\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
+          & "C:\relocated\gems\bin\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
           if (-not (Test-Path C:\relocated\app\Gemfile)) { throw "rails new produced no app" }
 
           Write-Host "--- pinning the Gemfile to the lean set ---"
@@ -114,7 +114,7 @@ jobs:
           ) | Set-Content C:\relocated\app\Gemfile
 
           Push-Location C:\relocated\app
-          & "$ruby\\bin\\bundle.cmd" install 2>&1 | Tee-Object -Variable out
+          & "$ruby\bin\bundle.cmd" install 2>&1 | Tee-Object -Variable out
           $code = $LASTEXITCODE
           Pop-Location
           $native = $out | Select-String "with native extensions"

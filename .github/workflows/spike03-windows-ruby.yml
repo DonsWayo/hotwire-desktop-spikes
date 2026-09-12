@@ -187,8 +187,26 @@ jobs:
             'gem "tzinfo-data", platforms: %i[windows jruby]'
           ) | Set-Content C:\relocated\app2\Gemfile
 
+          function Resolve-Bin([string]$name, [string[]]$dirs) {
+            foreach ($d in $dirs) {
+              foreach ($ext in @(".cmd", ".bat", "")) {
+                $p = Join-Path $d ($name + $ext)
+                if (Test-Path $p) { return $p }
+              }
+            }
+            Write-Host "could not find a '$name' binstub. Contents:"
+            foreach ($d in $dirs) {
+              Write-Host "  $d :"
+              if (Test-Path $d) { Get-ChildItem $d | ForEach-Object { Write-Host "      $($_.Name)" } }
+              else { Write-Host "      (missing)" }
+            }
+            throw "no '$name' binstub found"
+          }
+
+          $bundle = Resolve-Bin "bundle" @("$ruby\bin", "C:\relocated\gems2\bin")
+          Write-Host "using $bundle"
           Push-Location C:\relocated\app2
-          & "$ruby\bin\bundle.cmd" install 2>&1 | Tee-Object -Variable out
+          & $bundle install 2>&1 | Tee-Object -Variable out
           $code = $LASTEXITCODE
           Pop-Location
           if ($code -ne 0) {

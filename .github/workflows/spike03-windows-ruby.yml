@@ -1,0 +1,137 @@
+name: Spike 3 — relocatable Ruby on Windows
+
+# The Windows gate from the feasibility study, run on a free public runner.
+#
+# Three questions, none of which anyone appears to have published an answer to:
+#   1. Does the portable RubyInstaller archive actually relocate?
+#   2. Does it survive a path with a space in it? A real app installs to
+#      C:\Program Files\<name>\, and the RubyInstaller FAQ warns that spaces
+#      break gem installation.
+#   3. Can Rails boot from it WITHOUT shipping the MSYS2 devkit? If precompiled
+#      gems cover everything, the Windows payload is small. If puma or sqlite3
+#      need a compiler, the whole packaging story changes.
+
+on:
+  workflow_dispatch:
+  push:
+    paths: [".github/workflows/spike03-windows-ruby.yml"]
+
+env:
+  RUBY_VERSION: "3.4.10"      # newest 3.4.x with a portable archive
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Fetch the portable archive (no installer, no devkit)
+        shell: pwsh
+        run: |
+          $v = $env:RUBY_VERSION
+          $url = "https://github.com/oneclick/rubyinstaller2/releases/download/RubyInstaller-$v-1/rubyinstaller-$v-1-x64.7z"
+          Write-Host "Downloading $url"
+          curl.exe -fsSL -o ruby.7z $url
+          7z x ruby.7z -oC:\unpacked | Out-Null
+          $dir = (Get-ChildItem C:\unpacked | Select-Object -First 1).FullName
+          Write-Host "Unpacked to $dir"
+          "RUBY_SRC=$dir" | Out-File -Append $env:GITHUB_ENV
+
+      # 1 -------------------------------------------------------------------
+      - name: 1. Relocates to a clean path
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\relocated | Out-Null
+          Copy-Item -Recurse "$env:RUBY_SRC" C:\relocated\ruby
+          $v = & C:\relocated\ruby\bin\ruby.exe -v
+          if (-not $v) { throw "ruby did not run after being moved" }
+          Write-Host "OK  $v"
+          & C:\relocated\ruby\bin\ruby.exe -e 'require "psych"; raise "psych broken" unless Psych.load("- 1") == [1]; puts "OK  psych #{Psych::VERSION} (libyaml #{Psych::LIBYAML_VERSION})"'
+          & C:\relocated\ruby\bin\ruby.exe -e 'require "openssl"; puts "OK  #{OpenSSL::OPENSSL_VERSION}"'
+          & C:\relocated\ruby\bin\ruby.exe -e 'puts "OK  prefix follows binary: #{RbConfig::CONFIG["prefix"]}"'
+
+      # 2 -------------------------------------------------------------------
+      - name: 2. Survives a path with a space (C:\Program Files style)
+        shell: pwsh
+        continue-on-error: true      # a failure here is a finding, not a broken job
+        id: spaces
+        run: |
+          $target = "C:\Program Files Test\Hotwire Desktop\ruby"
+          New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+          Copy-Item -Recurse "$env:RUBY_SRC" $target
+          & "$target\bin\ruby.exe" -v
+          Write-Host "--- gem install into a spaced path (the FAQ says this breaks) ---"
+          $env:GEM_HOME = "C:\Program Files Test\Hotwire Desktop\gems"
+          & "$target\bin\gem.cmd" install json --no-document
+          if ($LASTEXITCODE -ne 0) { throw "gem install failed in a path containing spaces" }
+          Write-Host "OK  gem install worked in a path with spaces"
+
+      # 3 -------------------------------------------------------------------
+      - name: 3. Rails without the devkit — which gems need a compiler?
+        shell: pwsh
+        run: |
+          $ruby = "C:\relocated\ruby"
+          $env:GEM_HOME = "C:\relocated\gems"
+          $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
+          $env:PATH     = "$ruby\bin;C:\relocated\gems\bin;$env:PATH"
+
+          Write-Host "--- gem install rails ---"
+          & "$ruby\bin\gem.cmd" install rails --no-document
+          if ($LASTEXITCODE -ne 0) { throw "gem install rails failed" }
+
+          Write-Host "--- rails new --minimal ---"
+          & "C:\relocated\gems\bin\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle
+          if (-not (Test-Path C:\relocated\app\Gemfile)) { throw "rails new produced no app" }
+
+          Write-Host "--- bundle install (watch for 'with native extensions') ---"
+          Push-Location C:\relocated\app
+          & "$ruby\bin\bundle.cmd" install 2>&1 | Tee-Object -Variable out
+          $native = $out | Select-String "with native extensions"
+          Pop-Location
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::bundle install failed without the devkit — Windows needs MSYS2 shipped or vendored"
+            throw "bundle install failed"
+          }
+          if ($native) {
+            Write-Host "::warning::these gems compiled from source, so a toolchain was required:"
+            $native | ForEach-Object { Write-Host "    $_" }
+          } else {
+            Write-Host "OK  every gem resolved to a precompiled binary — no devkit needed"
+          }
+
+      - name: Boot Rails and serve a request
+        shell: pwsh
+        run: |
+          $ruby = "C:\relocated\ruby"
+          $env:GEM_HOME = "C:\relocated\gems"
+          $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
+          $env:RAILS_ENV = "production"
+          $env:SECRET_KEY_BASE_DUMMY = "1"
+          Push-Location C:\relocated\app
+          & "$ruby\bin\ruby.exe" -e @'
+            require "./config/environment"
+            require "rack/mock"
+            Rails.application.routes.draw { get "/up", to: proc { [200, {"content-type"=>"text/plain"}, ["ok"]] } }
+            status, = Rails.application.call(Rack::MockRequest.env_for("http://127.0.0.1/up"))
+            abort "GET /up returned #{status}" unless status == 200
+            puts "OK  Rails #{Rails::VERSION::STRING} booted and served a request"
+            puts "    from #{RbConfig::CONFIG["prefix"]}"
+'@
+          Pop-Location
+
+      - name: Payload size
+        shell: pwsh
+        if: always()
+        run: |
+          function Size($p) { if (Test-Path $p) { "{0:N0} MB" -f ((Get-ChildItem $p -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum / 1MB) } else { "n/a" } }
+          Write-Host "interpreter  $(Size 'C:\relocated\ruby')"
+          Write-Host "app gems     $(Size 'C:\relocated\gems')"
+          Write-Host "the app      $(Size 'C:\relocated\app')"
+
+      - name: Summary
+        shell: pwsh
+        if: always()
+        run: |
+          $spaces = if ("${{ steps.spaces.outcome }}" -eq "success") { "survives spaces in the path" } else { "FAILS in a path with spaces" }
+          Write-Host "Windows gate: $spaces"
+          "## Spike 3 — Windows`n`n- Spaced path: $spaces`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY

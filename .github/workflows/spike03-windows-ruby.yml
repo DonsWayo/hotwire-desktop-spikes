@@ -157,7 +157,12 @@ jobs:
             Write-Host "OK  every gem resolved to a precompiled binary — no devkit needs shipping"
           }
 
-      - name: 3c. CI builds the gems, with the toolchain it already has
+      - name: Set up a devkit Ruby for the build machine only
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      - name: 3c. CI builds the gems, with a properly configured toolchain
         shell: pwsh
         run: |
           # Reframing after 3b. The question was never "can gems install without
@@ -165,17 +170,14 @@ jobs:
           # bundle somebody else built. The real questions are whether CI can
           # build them, and whether the *result* runs with no toolchain present.
           #
-          # io-console and puma both ship source-only on Windows, so a compiler
-          # is required at build time. windows-latest carries MSYS2 already, it
-          # is simply not on PATH.
-          $ruby = "C:\relocated\ruby"
-          $env:GEM_HOME = "C:\relocated\gems2"
-          $env:GEM_PATH = "C:\relocated\gems2;$ruby\lib\ruby\gems\3.4.0"
-          $env:PATH     = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$ruby\bin;$env:PATH"
-          Write-Host "gcc: $((Get-Command gcc -ErrorAction SilentlyContinue).Source)"
-
-          New-Item -ItemType Directory -Force -Path C:\relocated\app2 | Out-Null
-          Copy-Item -Recurse -Force C:\relocated\app\* C:\relocated\app2 -ErrorAction SilentlyContinue
+          # Hand-rolling the MSYS2 environment failed: MSYS `make` resolves
+          # Windows paths in /C/... form and cannot find ruby.h. RubyInstaller
+          # ships `ridk` to configure this correctly, and setup-ruby installs the
+          # devkit build that has it. So the build machine gets a proper Ruby,
+          # while the *shipping* test below still uses the portable archive.
+          ruby -v
+          ridk version
+          New-Item -ItemType Directory -Force -Path C:\build-app | Out-Null
           @(
             'source "https://rubygems.org"'
             'gem "railties", "~> 8.1"'
@@ -185,33 +187,16 @@ jobs:
             'gem "puma"'
             'gem "sqlite3"'
             'gem "tzinfo-data", platforms: %i[windows jruby]'
-          ) | Set-Content C:\relocated\app2\Gemfile
+          ) | Set-Content C:\build-app\Gemfile
 
-          function Resolve-Bin([string]$name, [string[]]$dirs) {
-            foreach ($d in $dirs) {
-              foreach ($ext in @(".cmd", ".bat", "")) {
-                $p = Join-Path $d ($name + $ext)
-                if (Test-Path $p) { return $p }
-              }
-            }
-            Write-Host "could not find a '$name' binstub. Contents:"
-            foreach ($d in $dirs) {
-              Write-Host "  $d :"
-              if (Test-Path $d) { Get-ChildItem $d | ForEach-Object { Write-Host "      $($_.Name)" } }
-              else { Write-Host "      (missing)" }
-            }
-            throw "no '$name' binstub found"
-          }
-
-          $bundle = Resolve-Bin "bundle" @("$ruby\bin", "C:\relocated\gems2\bin")
-          Write-Host "using $bundle"
-          Push-Location C:\relocated\app2
-          & $bundle install 2>&1 | Tee-Object -Variable out
+          $env:BUNDLE_PATH = "C:\build-gems"
+          Push-Location C:\build-app
+          bundle install 2>&1 | Tee-Object -Variable out
           $code = $LASTEXITCODE
           Pop-Location
           if ($code -ne 0) {
             $out | Select-Object -Last 25 | ForEach-Object { Write-Host "    $_" }
-            throw "CI could not build the bundle even with MSYS2 on PATH"
+            throw "CI could not build the bundle even with a devkit Ruby"
           }
           Write-Host "compiled during the build:"
           ($out | Select-String "with native extensions") | ForEach-Object { Write-Host "    $_" }
@@ -220,30 +205,40 @@ jobs:
       - name: 3d. The built bundle runs with NO toolchain present
         shell: pwsh
         run: |
-          # The shipping test. Move everything somewhere else, take MSYS2 off
-          # PATH entirely, and boot. If this passes, the user needs no compiler
-          # and Windows is a packaging problem rather than a blocker.
+          # The shipping test: take the gems CI compiled, put them beside the
+          # portable interpreter, hide every toolchain, and boot Rails. Passing
+          # means the user needs no compiler and Windows is a packaging job.
           $ruby = "C:\shipped\ruby"
           New-Item -ItemType Directory -Force -Path C:\shipped | Out-Null
-          Copy-Item -Recurse C:\relocated\ruby   C:\shipped\ruby
-          Copy-Item -Recurse C:\relocated\gems2  C:\shipped\gems
-          Copy-Item -Recurse C:\relocated\app2   C:\shipped\app
+          Copy-Item -Recurse C:\relocated\ruby C:\shipped\ruby
+          Copy-Item -Recurse C:\build-gems     C:\shipped\gems
+          Copy-Item -Recurse C:\build-app      C:\shipped\app
 
-          if (Test-Path C:\msys64) { Rename-Item C:\msys64 C:\msys64-hidden }
+          foreach ($d in @("C:\msys64", "C:\mingw64")) {
+            if (Test-Path $d) { Rename-Item $d "$d-hidden" }
+          }
           $env:PATH = "$ruby\bin;C:\Windows\system32;C:\Windows"
-          Write-Host "gcc on PATH now: $((Get-Command gcc -ErrorAction SilentlyContinue).Source ?? 'none — good')"
+          $gcc = (Get-Command gcc -ErrorAction SilentlyContinue).Source
+          Write-Host "gcc on PATH: $(if ($gcc) { $gcc } else { 'none — good' })"
 
-          $env:GEM_HOME = "C:\shipped\gems"
-          $env:GEM_PATH = "C:\shipped\gems;$ruby\lib\ruby\gems\3.4.0"
+          $vendored = Get-ChildItem "C:\shipped\gems" -Recurse -Directory -Filter "ruby" -EA SilentlyContinue | Select-Object -First 1
+          $env:GEM_HOME = if ($vendored) { $vendored.FullName + "\3.4.0" } else { "C:\shipped\gems" }
+          $env:GEM_PATH = "$env:GEM_HOME;$ruby\lib\ruby\gems\3.4.0"
+          Write-Host "GEM_HOME = $env:GEM_HOME"
           $env:RAILS_ENV = "production"
           $env:SECRET_KEY_BASE_DUMMY = "1"
+
           Copy-Item "$env:GITHUB_WORKSPACE\spike03-windows-ruby\boot_check.rb" C:\shipped\app\boot_check.rb
           Push-Location C:\shipped\app
           & "$ruby\bin\ruby.exe" boot_check.rb
           $code = $LASTEXITCODE
           Pop-Location
-          if (Test-Path C:\msys64-hidden) { Rename-Item C:\msys64-hidden C:\msys64 }
+
+          foreach ($d in @("C:\msys64-hidden", "C:\mingw64-hidden")) {
+            if (Test-Path $d) { Rename-Item $d ($d -replace "-hidden$", "") }
+          }
           if ($code -ne 0) { throw "the built bundle does not run without a toolchain" }
+          Write-Host "OK  runs with no compiler anywhere on the machine"
 
       - name: Payload size
         shell: pwsh

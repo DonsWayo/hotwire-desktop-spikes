@@ -1,6 +1,6 @@
 # Spike 5 — Turbo Streams over SSE, with no ActionCable
 
-**Result: PASS** in Chromium and WebKit, 12 September 2026.
+**Result: PASS** in Chromium and WebKit, on macOS and Linux, 12 September 2026.
 
 ## Why this is the load-bearing check
 
@@ -48,10 +48,12 @@ Reading the source is not evidence that it works, so this drives real browser
 engines at a real Puma and asserts the **DOM changed**, not that a message
 arrived.
 
-| Engine | Result |
-|---|---|
-| Chromium (WebView2's engine) | rows appended, counter updated, sequence contiguous |
-| WebKit (WKWebView's engine) | rows appended, counter updated, sequence contiguous |
+| Engine | Stands in for | macOS | Linux CI |
+|---|---|---|---|
+| Chromium | WebView2 on Windows | pass | pass |
+| WebKit | WKWebView on macOS, WebKitGTK on Linux | pass | pass |
+
+Every engine family a desktop shell could embed, on two operating systems.
 
 Both `append` and `update` actions were exercised, so replacement is covered as
 well as accumulation.

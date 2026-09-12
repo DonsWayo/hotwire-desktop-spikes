@@ -93,19 +93,36 @@ jobs:
           $env:GEM_HOME = "C:\relocated\gems"
           $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
           $env:PATH     = "$ruby\bin;C:\relocated\gems\bin;$env:PATH"
+          $dirs = @("C:\relocated\gems\bin", "$ruby\bin")
 
+          # Stop guessing extensions. RubyInstaller ships .cmd wrappers in
+          # ruby\bin, RubyGems writes .bat binstubs into GEM_HOME\bin, and which
+          # one exists for a given tool is not something to assume. Resolve, and
+          # if it is missing, print the directory rather than fail blind.
+          function Resolve-Bin([string]$name, [string[]]$dirs) {
+            foreach ($d in $dirs) {
+              foreach ($ext in @(".cmd", ".bat", "")) {
+                $p = Join-Path $d ($name + $ext)
+                if (Test-Path $p) { return $p }
+              }
+            }
+            Write-Host "could not find a '$name' binstub. Contents:"
+            foreach ($d in $dirs) {
+              Write-Host "  $d :"
+              if (Test-Path $d) { Get-ChildItem $d | ForEach-Object { Write-Host "      $($_.Name)" } }
+              else { Write-Host "      (missing)" }
+            }
+            throw "no '$name' binstub found"
+          }
+
+          $gem = Resolve-Bin "gem" @("$ruby\bin")
           Write-Host "--- railties provides the rails command without actioncable ---"
-          & "$ruby\bin\gem.cmd" install railties --no-document
+          & $gem install railties --no-document
           if ($LASTEXITCODE -ne 0) { throw "railties failed to install" }
 
-          # RubyGems writes .bat binstubs on Windows, while RubyInstaller's own
-          # wrappers in ruby\bin are .cmd. Resolve rather than assume.
-          Write-Host "binstubs in GEM_HOME\bin:"; Get-ChildItem "C:\relocated\gems\bin" | ForEach-Object { Write-Host "    $($_.Name)" }
-          $railsCmd = @("C:\relocated\gems\bin\rails.bat","C:\relocated\gems\bin\rails.cmd","C:\relocated\gems\bin\rails") |
-                      Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $railsCmd) { throw "no rails binstub was generated in GEM_HOME\bin" }
-          Write-Host "using $railsCmd"
-          & $railsCmd new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
+          $rails = Resolve-Bin "rails" $dirs
+          Write-Host "using $rails"
+          & $rails new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
           if (-not (Test-Path C:\relocated\app\Gemfile)) { throw "rails new produced no app" }
 
           Write-Host "--- pinning the Gemfile to the lean set ---"
@@ -120,8 +137,10 @@ jobs:
             'gem "tzinfo-data", platforms: %i[windows jruby]'
           ) | Set-Content C:\relocated\app\Gemfile
 
+          $bundle = Resolve-Bin "bundle" $dirs
+          Write-Host "using $bundle"
           Push-Location C:\relocated\app
-          & "$ruby\bin\bundle.cmd" install 2>&1 | Tee-Object -Variable out
+          & $bundle install 2>&1 | Tee-Object -Variable out
           $code = $LASTEXITCODE
           Pop-Location
           $native = $out | Select-String "with native extensions"

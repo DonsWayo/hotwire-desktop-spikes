@@ -1,0 +1,188 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spike 1 — loopback stream survival</title>
+<style>
+  :root{--ink:#10191e;--ground:#f1f4f5;--surface:#fff;--line:#d3dadd;--muted:#64757e;
+        --ok:#2f6b45;--bad:#93372b;--warn:#8f5f11;--accent:#14635d}
+  @media (prefers-color-scheme:dark){:root{--ink:#e6ecee;--ground:#0c1316;--surface:#121c20;
+        --line:#243137;--muted:#87979f;--ok:#72c08a;--bad:#e07c6c;--warn:#d8a75c;--accent:#57b6ab}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px 20px 48px;background:var(--ground);color:var(--ink);
+       font:14px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
+  h1{font-size:1.25rem;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0 0 20px;font-size:.9rem}
+  .grid{display:grid;gap:14px;grid-template-columns:1fr}
+  @media (min-width:760px){.grid{grid-template-columns:1fr 1fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:16px}
+  .card h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin:0 0 12px}
+  dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;
+     font-variant-numeric:tabular-nums}
+  dt{color:var(--muted);font-size:.85rem}
+  dd{margin:0;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88rem}
+  .state{display:inline-block;padding:2px 9px;border-radius:3px;font-size:.72rem;
+         text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+  .live{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+  .dead{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+  .idle{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+  .bad{color:var(--bad)} .good{color:var(--ok)}
+  #log{margin-top:18px;background:var(--surface);border:1px solid var(--line);border-radius:5px;
+       padding:12px 14px;max-height:300px;overflow:auto;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.7}
+  #log div{white-space:pre-wrap}
+  .hint{margin-top:18px;color:var(--muted);font-size:.85rem;max-width:62ch}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+</style>
+
+<h1>Loopback stream survival</h1>
+<p class="sub">Both transports pushed from the same Puma, same sequence numbers. Sleep the display, background the window, toggle Wi-Fi. A gap on one and not the other is the finding.</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Server-Sent Events</h2>
+    <dl>
+      <dt>State</dt><dd><span id="sse-state" class="state idle">connecting</span></dd>
+      <dt>Received</dt><dd id="sse-count">0</dd>
+      <dt>Last seq</dt><dd id="sse-seq">–</dd>
+      <dt>Missed seqs</dt><dd id="sse-missed">0</dd>
+      <dt>Since last</dt><dd id="sse-since">–</dd>
+      <dt>Worst gap</dt><dd id="sse-gap">–</dd>
+      <dt>Drops</dt><dd id="sse-drops">0</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h2>WebSocket</h2>
+    <dl>
+      <dt>State</dt><dd><span id="ws-state" class="state idle">connecting</span></dd>
+      <dt>Received</dt><dd id="ws-count">0</dd>
+      <dt>Last seq</dt><dd id="ws-seq">–</dd>
+      <dt>Missed seqs</dt><dd id="ws-missed">0</dd>
+      <dt>Since last</dt><dd id="ws-since">–</dd>
+      <dt>Worst gap</dt><dd id="ws-gap">–</dd>
+      <dt>Drops</dt><dd id="ws-drops">0</dd>
+    </dl>
+  </div>
+</div>
+
+<div id="log"></div>
+<p class="hint">Everything here is also written server-side to <code>results.jsonl</code>, because a suspended page cannot report on itself. The server's own record of when each connection opened and closed is the ground truth; this panel is corroboration.</p>
+
+<script>
+const EXPECTED_MS = 1000, GAP_ALERT_MS = 3000;
+const log = document.getElementById("log");
+function line(msg, cls) {
+  const d = document.createElement("div");
+  d.textContent = `${new Date().toISOString().slice(11,23)}  ${msg}`;
+  if (cls) d.className = cls;
+  log.prepend(d);
+  while (log.childElementCount > 400) log.lastElementChild.remove();
+}
+
+function tracker(name) {
+  return {
+    name, count: 0, lastSeq: null, missed: 0, drops: 0, worstGap: 0,
+    lastAt: null, state: "connecting",
+    message(seq) {
+      const now = performance.now();
+      if (this.lastAt !== null) {
+        const gap = now - this.lastAt;
+        if (gap > this.worstGap) this.worstGap = gap;
+        if (gap > GAP_ALERT_MS) {
+          line(`${this.name}: ${Math.round(gap)}ms gap — expected ~${EXPECTED_MS}ms`, "bad");
+          report({ kind: "gap", transport: this.name, gap_ms: Math.round(gap) });
+        }
+      }
+      if (this.lastSeq !== null && seq > this.lastSeq + 1) {
+        const lost = seq - this.lastSeq - 1;
+        this.missed += lost;
+        line(`${this.name}: missed ${lost} message(s) — jumped ${this.lastSeq} to ${seq}`, "bad");
+        report({ kind: "missed", transport: this.name, lost, from: this.lastSeq, to: seq });
+      }
+      this.lastSeq = seq; this.lastAt = now; this.count++; this.setState("live");
+      this.render();
+    },
+    setState(s) {
+      if (s === this.state) return;
+      this.state = s;
+      if (s === "dropped") { this.drops++; line(`${this.name}: connection dropped`, "bad");
+                             report({ kind: "drop", transport: this.name }); }
+      if (s === "live" && this.count > 0) line(`${this.name}: live`, "good");
+      this.render();
+    },
+    render() {
+      const id = this.name === "sse" ? "sse" : "ws";
+      const el = document.getElementById(`${id}-state`);
+      el.textContent = this.state;
+      el.className = "state " + (this.state === "live" ? "live" : this.state === "dropped" ? "dead" : "idle");
+      document.getElementById(`${id}-count`).textContent = this.count;
+      document.getElementById(`${id}-seq`).textContent = this.lastSeq ?? "–";
+      document.getElementById(`${id}-missed`).textContent = this.missed;
+      document.getElementById(`${id}-drops`).textContent = this.drops;
+      document.getElementById(`${id}-gap`).textContent = this.worstGap ? Math.round(this.worstGap) + "ms" : "–";
+    },
+    since() { return this.lastAt === null ? null : Math.round(performance.now() - this.lastAt); }
+  };
+}
+
+const sse = tracker("sse"), ws = tracker("websocket");
+
+function report(extra) {
+  try {
+    const body = JSON.stringify({
+      ...extra,
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+      sse: { count: sse.count, seq: sse.lastSeq, missed: sse.missed, drops: sse.drops, worst_gap_ms: Math.round(sse.worstGap) },
+      ws:  { count: ws.count,  seq: ws.lastSeq,  missed: ws.missed,  drops: ws.drops,  worst_gap_ms: Math.round(ws.worstGap) }
+    });
+    if (navigator.sendBeacon) navigator.sendBeacon("/report", new Blob([body], { type: "application/json" }));
+    else fetch("/report", { method: "POST", body, keepalive: true });
+  } catch (e) { /* reporting must never break the measurement */ }
+}
+
+// --- SSE ---
+let source;
+function openSSE() {
+  source = new EventSource("/stream");
+  source.onopen = () => sse.setState("live");
+  source.onmessage = (e) => sse.message(JSON.parse(e.data).seq);
+  source.onerror = () => sse.setState("dropped");   // EventSource retries on its own
+}
+
+// --- WebSocket (manual reconnect, so a drop is visible rather than papered over) ---
+let socket, wsRetry = 0;
+function openWS() {
+  socket = new WebSocket(`ws://${location.host}/ws`);
+  socket.onopen = () => { wsRetry = 0; ws.setState("live"); };
+  socket.onmessage = (e) => ws.message(JSON.parse(e.data).seq);
+  socket.onclose = () => {
+    ws.setState("dropped");
+    wsRetry = Math.min(wsRetry + 1, 5);
+    setTimeout(openWS, 500 * wsRetry);
+  };
+  socket.onerror = () => ws.setState("dropped");
+}
+
+// A stream that stops without an error event looks alive but is not. Watch the clock.
+setInterval(() => {
+  for (const t of [sse, ws]) {
+    const since = t.since();
+    document.getElementById(`${t.name === "sse" ? "sse" : "ws"}-since`).textContent =
+      since === null ? "–" : since + "ms";
+    if (since !== null && since > GAP_ALERT_MS && t.state === "live") t.setState("stalled");
+  }
+}, 500);
+
+addEventListener("visibilitychange", () => {
+  line(`page ${document.visibilityState}`);
+  report({ kind: "visibility" });
+});
+addEventListener("online",  () => { line("network online");  report({ kind: "online" }); });
+addEventListener("offline", () => { line("network offline"); report({ kind: "offline" }); });
+addEventListener("pagehide", () => report({ kind: "pagehide" }));
+setInterval(() => report({ kind: "heartbeat" }), 10000);
+
+openSSE(); openWS();
+line("harness started");
+report({ kind: "start", agent: navigator.userAgent });
+</script>

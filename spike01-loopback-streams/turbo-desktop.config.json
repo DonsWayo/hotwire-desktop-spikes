@@ -1,0 +1,6 @@
+{
+  "app_name": "Spike 1",
+  "server_url": "http://127.0.0.1:4321",
+  "window": { "width": 1100, "height": 860 },
+  "server": { "command": "" }
+}

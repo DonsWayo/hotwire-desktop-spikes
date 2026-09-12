@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Turbo Streams over SSE, no ActionCable</title>
+<style>
+  body{font:14px/1.6 ui-sans-serif,system-ui,sans-serif;margin:0;padding:24px;background:#f1f4f5;color:#10191e}
+  @media (prefers-color-scheme:dark){body{background:#0c1316;color:#e6ecee}}
+  h1{font-size:1.15rem;margin:0 0 4px}
+  p.sub{color:#64757e;margin:0 0 18px}
+  #counter{font:600 2rem/1 ui-monospace,Menlo,monospace;color:#14635d}
+  @media (prefers-color-scheme:dark){#counter{color:#57b6ab}}
+  ul{margin:12px 0 0;padding:0;list-style:none;max-height:240px;overflow:auto}
+  li{font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:2px 0;border-bottom:1px solid #d3dadd}
+</style>
+
+<h1>Turbo Streams over Server-Sent Events</h1>
+<p class="sub">No ActionCable, no WebSocket, no <code>websocket-driver</code>. The server pushes real
+<code>&lt;turbo-stream&gt;</code> fragments and Turbo applies them.</p>
+
+<div>seq <span id="counter">0</span></div>
+<ul id="feed"></ul>
+
+<script type="module">
+import * as Turbo from "/turbo.js";
+window.Turbo = Turbo;
+
+// The whole bridge. StreamObserver#connectStreamSource only ever calls
+// source.addEventListener("message", ...), and EventSource satisfies that, so
+// no adapter or shim is needed — an EventSource *is* a valid stream source.
+class TurboSSEStreamSource extends HTMLElement {
+  connectedCallback() {
+    this.source = new EventSource(this.getAttribute("src"));
+    Turbo.connectStreamSource(this.source);
+    this.source.addEventListener("open", () => document.body.dataset.sse = "open");
+    this.source.addEventListener("error", () => document.body.dataset.sse = "error");
+  }
+  disconnectedCallback() {
+    Turbo.disconnectStreamSource(this.source);
+    this.source?.close();
+  }
+}
+customElements.define("turbo-sse-stream-source", TurboSSEStreamSource);
+
+// Signals for the browser test, so it asserts on facts rather than sleeping.
+document.body.dataset.turbo = "loaded";
+new MutationObserver(() => {
+  document.body.dataset.rows = document.querySelectorAll("#feed li").length;
+  document.body.dataset.counter = document.getElementById("counter").textContent.trim();
+}).observe(document.body, { childList: true, subtree: true, characterData: true });
+</script>
+
+<turbo-sse-stream-source src="/stream"></turbo-sse-stream-source>

@@ -1,0 +1,39 @@
+name: Spike 5 — Turbo Streams over SSE
+
+# Runs the browser test on Linux too, where Playwright's webkit is the same
+# engine family as the WebKitGTK a Linux shell would embed.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "spike05-turbo-sse/**"
+      - ".github/workflows/spike05-turbo-sse.yml"
+
+jobs:
+  browsers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install puma and the browser engines
+        run: |
+          gem install puma --no-document
+          npm install playwright@latest
+          npx playwright install --with-deps chromium webkit
+
+      - name: Turbo Streams over SSE in Chromium and WebKit
+        working-directory: spike05-turbo-sse
+        run: |
+          ruby server.rb &
+          for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:4322/ && break; sleep 1; done
+          NODE_PATH="$GITHUB_WORKSPACE/node_modules" node test.js

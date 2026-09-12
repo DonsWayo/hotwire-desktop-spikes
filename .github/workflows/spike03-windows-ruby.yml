@@ -69,36 +69,64 @@ jobs:
           Write-Host "OK  gem install worked in a path with spaces"
 
       # 3 -------------------------------------------------------------------
-      - name: 3. Rails without the devkit — which gems need a compiler?
+      - name: 3a. Which gems have no precompiled Windows binary?
+        shell: pwsh
+        continue-on-error: true
+        id: fullrails
+        run: |
+          $ruby = "C:\\relocated\\ruby"
+          $env:GEM_HOME = "C:\\probe-gems"
+          Write-Host "--- installing the full rails meta-gem, purely to see what breaks ---"
+          & "$ruby\\bin\\gem.cmd" install rails --no-document 2>&1 | Tee-Object -Variable out
+          $out | Select-String "Building native extensions|ERROR|Gem files will remain" | ForEach-Object { Write-Host "  $_" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::the full rails meta-gem needs a compiler on Windows"
+          }
+
+      - name: 3b. The lean set a desktop app actually needs
         shell: pwsh
         run: |
-          $ruby = "C:\relocated\ruby"
-          $env:GEM_HOME = "C:\relocated\gems"
-          $env:GEM_PATH = "C:\relocated\gems;$ruby\lib\ruby\gems\3.4.0"
-          $env:PATH     = "$ruby\bin;C:\relocated\gems\bin;$env:PATH"
+          # A desktop app has one user and no cable server, so ActionCable — and
+          # its websocket-driver dependency, which ships no x64-mingw-ucrt binary
+          # — is not part of the payload. Turbo Streams ride SSE instead.
+          $ruby = "C:\\relocated\\ruby"
+          $env:GEM_HOME = "C:\\relocated\\gems"
+          $env:GEM_PATH = "C:\\relocated\\gems;$ruby\\lib\\ruby\\gems\\3.4.0"
+          $env:PATH     = "$ruby\\bin;C:\\relocated\\gems\\bin;$env:PATH"
 
-          Write-Host "--- gem install rails ---"
-          & "$ruby\bin\gem.cmd" install rails --no-document
-          if ($LASTEXITCODE -ne 0) { throw "gem install rails failed" }
+          Write-Host "--- railties provides the rails command without actioncable ---"
+          & "$ruby\\bin\\gem.cmd" install railties --no-document
+          if ($LASTEXITCODE -ne 0) { throw "railties failed to install" }
 
-          Write-Host "--- rails new --minimal ---"
-          & "C:\relocated\gems\bin\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle
+          & "C:\\relocated\\gems\\bin\\rails.cmd" new C:\relocated\app --minimal --skip-git --skip-bundle --skip-action-cable
           if (-not (Test-Path C:\relocated\app\Gemfile)) { throw "rails new produced no app" }
 
-          Write-Host "--- bundle install (watch for 'with native extensions') ---"
+          Write-Host "--- pinning the Gemfile to the lean set ---"
+          @(
+            'source "https://rubygems.org"'
+            'gem "railties", "~> 8.1"'
+            'gem "actionpack", "~> 8.1"'
+            'gem "activerecord", "~> 8.1"'
+            'gem "propshaft"'
+            'gem "puma"'
+            'gem "sqlite3"'
+            'gem "tzinfo-data", platforms: %i[windows jruby]'
+          ) | Set-Content C:\relocated\app\Gemfile
+
           Push-Location C:\relocated\app
-          & "$ruby\bin\bundle.cmd" install 2>&1 | Tee-Object -Variable out
-          $native = $out | Select-String "with native extensions"
+          & "$ruby\\bin\\bundle.cmd" install 2>&1 | Tee-Object -Variable out
+          $code = $LASTEXITCODE
           Pop-Location
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::warning::bundle install failed without the devkit — Windows needs MSYS2 shipped or vendored"
+          $native = $out | Select-String "with native extensions"
+          if ($code -ne 0) {
+            Write-Host "::error::even the lean set needs a compiler on Windows"
             throw "bundle install failed"
           }
           if ($native) {
-            Write-Host "::warning::these gems compiled from source, so a toolchain was required:"
+            Write-Host "::warning::compiled from source (a toolchain is required):"
             $native | ForEach-Object { Write-Host "    $_" }
           } else {
-            Write-Host "OK  every gem resolved to a precompiled binary — no devkit needed"
+            Write-Host "OK  every gem resolved to a precompiled binary — no devkit needs shipping"
           }
 
       - name: Boot Rails and serve a request
@@ -133,3 +161,4 @@ jobs:
           "## Spike 3 - Windows gate" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           "" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           "- Spaced path: $spaces" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          "- Full rails meta-gem: ${{ steps.fullrails.outcome }} (needs a compiler if failure)" | Out-File -Append $env:GITHUB_STEP_SUMMARY

@@ -85,6 +85,8 @@ jobs:
 
       - name: 3b. The lean set a desktop app actually needs
         shell: pwsh
+        continue-on-error: true
+        id: lean
         run: |
           # A desktop app has one user and no cable server, so ActionCable — and
           # its websocket-driver dependency, which ships no x64-mingw-ucrt binary
@@ -153,6 +155,75 @@ jobs:
             $native | ForEach-Object { Write-Host "    $_" }
           } else {
             Write-Host "OK  every gem resolved to a precompiled binary — no devkit needs shipping"
+          }
+
+      - name: 3c. Pin the default gems Ruby already ships
+        shell: pwsh
+        run: |
+          # Real finding from 3b: railties -> irb -> reline -> io-console, and
+          # io-console has no precompiled Windows binary, so bundler compiles it.
+          #
+          # But io-console is a *default gem*: the interpreter already carries a
+          # working copy. Only bundler's preference for the newest version drags
+          # in a source build. Pinning to what ships should avoid the compiler
+          # entirely — and irb exists for `rails console`, which a packaged
+          # desktop app never runs.
+          $ruby = "C:\relocated\ruby"
+          $env:GEM_HOME = "C:\relocated\gems2"
+          $env:GEM_PATH = "C:\relocated\gems2;$ruby\lib\ruby\gems\3.4.0"
+
+          $defaults = & "$ruby\bin\ruby.exe" -e "puts Gem::Specification.default_stubs.map { |s| [s.name, s.version].join(' ') }"
+          Write-Host "default gems the interpreter already carries:"
+          $defaults | Where-Object { $_ -match "io-console|reline|irb|psych|openssl|json|zlib|stringio" } | ForEach-Object { Write-Host "    $_" }
+          $ioc = ($defaults | Where-Object { $_ -match "^io-console " }) -replace "io-console ", ""
+          Write-Host "pinning io-console to the bundled $ioc"
+
+          New-Item -ItemType Directory -Force -Path C:\relocated\app2 | Out-Null
+          Copy-Item -Recurse -Force C:\relocated\app\* C:\relocated\app2 -ErrorAction SilentlyContinue
+          @(
+            'source "https://rubygems.org"'
+            'gem "railties", "~> 8.1"'
+            'gem "actionpack", "~> 8.1"'
+            'gem "activerecord", "~> 8.1"'
+            'gem "propshaft"'
+            'gem "puma"'
+            'gem "sqlite3"'
+            "gem `"io-console`", `"$ioc`""
+            'gem "tzinfo-data", platforms: %i[windows jruby]'
+          ) | Set-Content C:\relocated\app2\Gemfile
+
+          function Resolve-Bin([string]$name, [string[]]$dirs) {
+            foreach ($d in $dirs) {
+              foreach ($ext in @(".cmd", ".bat", "")) {
+                $p = Join-Path $d ($name + $ext)
+                if (Test-Path $p) { return $p }
+              }
+            }
+            Write-Host "could not find a '$name' binstub. Contents:"
+            foreach ($d in $dirs) {
+              Write-Host "  $d :"
+              if (Test-Path $d) { Get-ChildItem $d | ForEach-Object { Write-Host "      $($_.Name)" } }
+              else { Write-Host "      (missing)" }
+            }
+            throw "no '$name' binstub found"
+          }
+
+          $bundle = Resolve-Bin "bundle" @("C:\relocated\gems2\bin", "$ruby\bin")
+          Push-Location C:\relocated\app2
+          & $bundle install 2>&1 | Tee-Object -Variable out
+          $code = $LASTEXITCODE
+          Pop-Location
+          $native = $out | Select-String "with native extensions"
+          if ($code -ne 0) {
+            Write-Host "::error::pinning default gems did not avoid the compiler"
+            $out | Select-Object -Last 20 | ForEach-Object { Write-Host "    $_" }
+            throw "bundle install still failed"
+          }
+          if ($native) {
+            Write-Host "::warning::still compiled from source:"
+            $native | ForEach-Object { Write-Host "    $_" }
+          } else {
+            Write-Host "OK  no compiler needed once default gems are pinned"
           }
 
       - name: Boot Rails and serve a request

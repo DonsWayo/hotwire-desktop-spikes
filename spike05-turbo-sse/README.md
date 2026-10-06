@@ -79,10 +79,10 @@ npx playwright install chromium webkit             # the engine half
 ```
 
 `test.sh` installs `playwright` from this directory's own `package.json` if it
-is not resolvable yet, so a clean clone needs nothing beyond that. Engines that
-are not installed are reported as skipped rather than failing the run, which is
-why the two install lines above are not optional if you want a result rather
-than a skip.
+is not resolvable yet, so a clean clone needs nothing beyond that. An engine
+that is not installed is reported as skipped rather than failing the run, but a
+run in which no engine launched at all is a failure, not a pass — which is why
+the two install lines above are not optional.
 
 ## What this does not prove
 

@@ -87,8 +87,9 @@ cd spike02-relocatable-ruby && ./build.sh && ./verify.sh
 cd spike04-packaging-checks && ./run.sh
 
 # Spike 5 — starts the server, drives both engines, reports, stops
-cd spike05-turbo-sse && ./test.sh
-./run.sh      # just the server
+cd spike05-turbo-sse && gem install puma && npx playwright install chromium webkit
+./test.sh      # playwright itself is installed by test.sh on first run
+./run.sh       # just the server
 
 # Spike 6 — builds the bundle four ways and runs each
 cd spike06-macos-signing && ./verify.sh

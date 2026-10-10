@@ -9,6 +9,13 @@ SRV=$!
 trap 'kill $SRV 2>/dev/null; lsof -ti tcp:$PORT | xargs -r kill -9 2>/dev/null' EXIT
 for _ in $(seq 1 60); do curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$PORT/" && break; done
 
-NODE_PATH="$(ls -d /Users/juan.carracedo/Documents/GitHub/*/node_modules 2>/dev/null | head -1)" \
+# playwright is the only JavaScript dependency and it belongs to this spike, so
+# it is installed here rather than borrowed from a sibling checkout. test.js
+# resolves it from ./node_modules by node's own upward walk; no NODE_PATH.
+if ! mise exec node@22 -- node -e 'require.resolve("playwright")' >/dev/null 2>&1; then
+  echo "  installing playwright (first run only)"
+  mise exec node@22 -- npm ci --no-audit --no-fund
+fi
+
 TARGET="http://127.0.0.1:$PORT/" \
   mise exec node@22 -- node test.js

@@ -28,12 +28,14 @@ jobs:
       - name: Install puma and the browser engines
         run: |
           gem install puma --no-document
-          npm install playwright@latest
-          npx playwright install --with-deps chromium webkit
+          npm ci --no-audit --no-fund --prefix spike05-turbo-sse
+          cd spike05-turbo-sse && npx playwright install --with-deps chromium webkit
 
       - name: Turbo Streams over SSE in Chromium and WebKit
         working-directory: spike05-turbo-sse
         run: |
           ruby server.rb &
           for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:4322/ && break; sleep 1; done
-          NODE_PATH="$GITHUB_WORKSPACE/node_modules" node test.js
+          # playwright lives in this directory's node_modules, so node's own
+          # resolution finds it — the same way test.sh does on a laptop.
+          node test.js

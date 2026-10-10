@@ -8,6 +8,7 @@ const engines = { chromium, webkit };   // webkit is the engine WKWebView uses
 
 (async () => {
   let failures = 0;
+  let launched = 0;
   for (const [name, engine] of Object.entries(engines)) {
     let browser;
     try {
@@ -16,6 +17,7 @@ const engines = { chromium, webkit };   // webkit is the engine WKWebView uses
       console.log(`  ?  ${name}: not installed, skipped`);
       continue;
     }
+    launched++;
     const page = await (await browser.newContext()).newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
@@ -52,6 +54,13 @@ const engines = { chromium, webkit };   // webkit is the engine WKWebView uses
     } finally {
       await browser.close();
     }
+  }
+  // Skipping an engine is tolerable; skipping every engine is not, because it
+  // would otherwise exit 0 on a machine with no browsers installed and read as
+  // a pass. npx playwright install chromium webkit is what makes this pass.
+  if (!launched) {
+    console.log('  FAIL no engine launched: run `npx playwright install chromium webkit`');
+    failures++;
   }
   process.exit(failures ? 1 : 0);
 })();

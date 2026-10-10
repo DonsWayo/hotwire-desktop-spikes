@@ -1,0 +1,11 @@
+{
+  "name": "spike05-turbo-sse",
+  "private": true,
+  "description": "Browser half of the Turbo Streams over SSE spike. Playwright drives Chromium and WebKit.",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
